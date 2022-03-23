@@ -1,0 +1,14 @@
+cat <<EOF | sudo kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb-system
+  name: config
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - ${start_range_ip}-${end_range_ip}
+EOF
