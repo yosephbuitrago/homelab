@@ -70,7 +70,7 @@ module "k3s_master_nodes" {
   inline = [
     templatefile("../../tpl/install-k3s-server.sh.tftpl", {
       mode         = "server"
-      tokens       = [nonsensitive(random_password.k3s-server-token.result)]
+      tokens       = [random_password.k3s-server-token.result]
       alt_names    = [local.mariadb_vm_ip]
       server_hosts = []
       node_taints  = ["CriticalAddonsOnly=true:NoExecute"]
@@ -79,7 +79,7 @@ module "k3s_master_nodes" {
         host     = "${local.mariadb_vm_ip}:3306"
         name     = var.k3s_db_name
         user     = var.k3s_db_user_name
-        password = nonsensitive(random_password.k3s-master-db-password.result)
+        password = random_password.k3s-master-db-password.result
       }]
     }),
     "sudo apt install jq nfs-common -y",
@@ -102,7 +102,7 @@ module "k3s_workers_nodes" {
   inline = [
     templatefile("../../tpl/install-k3s-server.sh.tftpl", {
       mode         = "agent"
-      tokens       = [nonsensitive(random_password.k3s-server-token.result)]
+      tokens       = [random_password.k3s-server-token.result]
       alt_names    = []
       disable      = []
       server_hosts = ["https://${local.mariadb_vm_ip}:6443"]
@@ -145,7 +145,7 @@ resource "null_resource" "cluster_config" {
       nfs_server_ip                  = var.nfs_server_ip
       nfs_path                       = var.nfs_path
       external_dns_key_id            = module.route53_homelab.external_dns_key_id
-      external_dns_secret_access_key = nonsensitive(module.route53_homelab.external_dns_secret_access_key)
+      external_dns_secret_access_key = module.route53_homelab.external_dns_secret_access_key
       cert_manager_access_key        = module.route53_homelab.cert_manager_secret_access_key
       cert_manager_key_id            = module.route53_homelab.cert_manager_key_id
       letsencrypt_email              = var.letsencrypt_email
