@@ -1,0 +1,100 @@
+#!/bin/bash
+set -e
+
+cd /tmp 
+wget https://get.helm.sh/helm-v3.8.1-linux-amd64.tar.gz
+tar -xzf helm-v3.8.1-linux-amd64.tar.gz
+sudo mv linux-amd64/helm /usr/local/bin/
+cd
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+kubectl create namespace metallb
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb
+  name: metallb-config
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - ${start_range_ip}-${end_range_ip}
+EOF
+
+echo "install metallb"
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm install metallb bitnami/metallb \
+    --namespace metallb \
+    --set existingConfigMap="metallb-config" \
+    --version 2.6.9 \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml
+
+echo "install nfs-subdir-external-provisioner"
+helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
+helm install nfs-subdir-external-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+    --create-namespace --namespace nfs-subdir-external-provisioner \
+    --set nfs.server=${nfs_server_ip} \
+    --set nfs.path=${nfs_path} \
+    --set storageClass.defaultClass=true \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml
+
+echo "install cert-manager"
+helm repo add jetstack https://charts.jetstack.io
+kubectl create namespace cert-manager
+kubectl create secret -n cert-manager generic aws-cert-manager-access-key \
+    --from-literal=secret-access-key="${cert_manager_access_key}" \
+
+helm install cert-manager jetstack/cert-manager \
+    --namespace cert-manager \
+    --set installCRDs=true \
+    --version v1.7.2 \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml
+
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    email: ${letsencrypt_email}
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt
+    solvers:
+    - selector:
+        dnsZones:
+          - "${zone_name}"
+      dns01:
+        route53:
+          region: ${aws_region}
+          accessKeyID: ${cert_manager_key_id}
+          secretAccessKeySecretRef:
+            name: aws-cert-manager-access-key
+            key: secret-access-key
+EOF
+
+echo "install external-dns"
+kubectl create namespace external-dns
+helm install external-dns bitnami/external-dns \
+    --namespace external-dns --set provider="aws" \
+    --set aws.credentials.accessKey="${external_dns_key_id}" \
+    --set aws.credentials.secretKey="${external_dns_secret_access_key}" \
+    --set aws.credentials.mountPath="/.aws" \
+    --set aws.region="${aws_region}" \
+    --version 6.2.2 \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml
+
+cat <<EOF | kubectl apply -f -
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: redirectscheme
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+EOF
