@@ -10,8 +10,8 @@ module "mariadb" {
   vm_name         = var.mariadb.vm_name
   vm_settings     = var.mariadb
   vm_ip           = local.mariadb_vm_ip
-  ssh_key         = file("/Users/yosephbuitrago/.ssh/id_rsa.pub")
-  private_ssh_key = file("/Users/yosephbuitrago/.ssh/id_rsa")
+  ssh_key         = file(var.ssh_key)
+  private_ssh_key = file(var.private_ssh_key)
   inline = [
     templatefile("../../tpl/install-support-apps.sh.tftpl", {
       root_password = random_password.root-db-password.result
@@ -19,6 +19,9 @@ module "mariadb" {
       k3s_user      = var.k3s_db_user_name
       k3s_password  = random_password.k3s-master-db-password.result
     })
+  ]
+  depends_on = [
+    module.route53_homelab
   ]
 }
 
@@ -36,7 +39,7 @@ resource "null_resource" "mariadb" {
     type        = "ssh"
     user        = var.mariadb.user
     host        = local.mariadb_vm_ip
-    private_key = file("/Users/yosephbuitrago/.ssh/id_rsa")
+    private_key = file(var.private_ssh_key)
   }
 
   provisioner "file" {
@@ -45,13 +48,12 @@ resource "null_resource" "mariadb" {
       k3s_server_hosts = [for ip in local.master_node_ips :
         "${ip}:6443"
       ]
-      k3s_nodes = concat(local.master_node_ips, local.workers_nodes_ips)
     })
   }
 
   provisioner "remote-exec" {
     inline = [
-      "sudo mv /tmp/nginx.conf /etc/nginx/nginx.conf",
+      "sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf",
       "sudo systemctl restart nginx.service",
     ]
   }
@@ -63,13 +65,13 @@ module "k3s_master_nodes" {
   vm_name         = "${var.master_nodes.vm_name}${count.index + 1}"
   vm_settings     = var.master_nodes
   vm_ip           = local.master_node_ips["${count.index}"]
-  ssh_key         = file("/Users/yosephbuitrago/.ssh/id_rsa.pub")
-  private_ssh_key = file("/Users/yosephbuitrago/.ssh/id_rsa")
+  ssh_key         = file(var.ssh_key)
+  private_ssh_key = file(var.private_ssh_key)
   inline = [
     templatefile("../../tpl/install-k3s-server.sh.tftpl", {
       mode         = "server"
       tokens       = [nonsensitive(random_password.k3s-server-token.result)]
-      alt_names    = concat([nonsensitive(random_password.k3s-server-token.result)], [])
+      alt_names    = [local.mariadb_vm_ip]
       server_hosts = []
       node_taints  = ["CriticalAddonsOnly=true:NoExecute"]
       disable      = var.k3s_disable_components
@@ -81,18 +83,11 @@ module "k3s_master_nodes" {
       }]
     }),
     "sudo apt install jq nfs-common -y",
-    "kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/namespace.yaml",
-    templatefile("../../tpl/metallb.sh.tftpl", {
-      start_range_ip = var.metallb_start_range_ip
-      end_range_ip   = var.metallb_end_range_ip
-    }),
-    "kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/metallb.yaml",
-    templatefile("../../tpl/nfs-provisioner.sh.tftpl", {
-      nfs_server_ip = var.nfs_server_ip
-      nfs_path      = var.nfs_path
-    })
   ]
-  depends_on = [module.mariadb]
+  depends_on = [
+    module.route53_homelab,
+    module.mariadb
+  ]
 }
 
 
@@ -102,8 +97,8 @@ module "k3s_workers_nodes" {
   vm_name         = "${var.worker_nodes.vm_name}${count.index + 1}"
   vm_settings     = var.worker_nodes
   vm_ip           = local.workers_nodes_ips["${count.index}"]
-  ssh_key         = file("/Users/yosephbuitrago/.ssh/id_rsa.pub")
-  private_ssh_key = file("/Users/yosephbuitrago/.ssh/id_rsa")
+  ssh_key         = file(var.ssh_key)
+  private_ssh_key = file(var.private_ssh_key)
   inline = [
     templatefile("../../tpl/install-k3s-server.sh.tftpl", {
       mode         = "agent"
@@ -116,5 +111,53 @@ module "k3s_workers_nodes" {
     }),
     "sudo apt install jq nfs-common -y"
   ]
-  depends_on = [module.k3s_master_nodes]
+
+  depends_on = [
+    module.route53_homelab,
+    module.mariadb,
+    module.k3s_master_nodes
+  ]
+}
+
+
+resource "null_resource" "cluster_config" {
+
+  depends_on = [
+    module.k3s_workers_nodes
+  ]
+
+  triggers = {
+    config_change = filemd5("../../tpl/cluster-config.sh.tftpl")
+  }
+
+  connection {
+    type        = "ssh"
+    user        = var.mariadb.user
+    host        = local.master_node_ips[0]
+    private_key = file(var.private_ssh_key)
+  }
+
+  provisioner "file" {
+    destination = "/tmp/cluster-config.sh"
+    content = templatefile("../../tpl/cluster-config.sh.tftpl", {
+      start_range_ip                 = var.metallb_start_range_ip
+      end_range_ip                   = var.metallb_end_range_ip
+      nfs_server_ip                  = var.nfs_server_ip
+      nfs_path                       = var.nfs_path
+      external_dns_key_id            = module.route53_homelab.external_dns_key_id
+      external_dns_secret_access_key = nonsensitive(module.route53_homelab.external_dns_secret_access_key)
+      cert_manager_access_key        = module.route53_homelab.cert_manager_secret_access_key
+      cert_manager_key_id            = module.route53_homelab.cert_manager_key_id
+      letsencrypt_email              = var.letsencrypt_email
+      zone_name                      = module.route53_homelab.zone_name
+      aws_region                     = var.aws_region
+    })
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "chmod +x /tmp/cluster-config.sh",
+      "/tmp/cluster-config.sh",
+    ]
+  }
 }

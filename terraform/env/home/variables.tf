@@ -39,7 +39,7 @@ variable "worker_nodes" {
     target_node  = "prox"
     cores        = "2"
     sockets      = "1"
-    memory       = "2048"
+    memory       = "3096"
     storage_type = "scsi"
     storage_id   = "QNAP"
     disk_size    = "10G"
@@ -105,4 +105,30 @@ variable "nfs_server_ip" {
 
 variable "nfs_path" {
   default = "/k8s"
+}
+
+variable "letsencrypt_email" {
+  default = "yosephbuitrago.01@gmail.com"
+}
+
+variable "zone_name" {
+  default = "yosephbuitrago.com"
+}
+
+variable "tags" {
+  default = {
+    Env = "homelab"
+  }
+}
+
+variable "aws_region" {
+  default = "eu-west-1"
+}
+
+variable "ssh_key" {
+  default = "/Users/yosephbuitrago/.ssh/id_rsa.pub"
+}
+
+variable "private_ssh_key" {
+  default = "/Users/yosephbuitrago/.ssh/id_rsa"
 }
